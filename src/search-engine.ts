@@ -366,11 +366,14 @@ export class SearchEngine {
       console.error(`[SearchEngine] BING: Search box found, filling with query: "${query}"`);
       await page.fill('#sb_form_q', query);
       
-      console.error(`[SearchEngine] BING: Clicking search button and waiting for navigation...`);
-      // Submit the search form
-      await Promise.all([
-        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: timeout }),
-        page.click('#search_icon')
+      console.error(`[SearchEngine] BING: Clicking search button and waiting for results...`);
+      // Submit the form. Through proxies, waitForNavigation('domcontentloaded')
+      // is unreliable because Bing's modern UI uses partial reloads. Race instead:
+      // succeed when *either* the URL changes to /search?q= or a result selector appears.
+      await page.click('#search_icon').catch(() => undefined);
+      await Promise.race([
+        page.waitForURL(/\/search\?/, { timeout: timeout }),
+        page.waitForSelector('.b_algo, .b_result, #b_results', { timeout: timeout }),
       ]);
       
       const searchLoadTime = Date.now() - startTime;
@@ -965,11 +968,32 @@ export class SearchEngine {
   }
 
   private cleanBingUrl(url: string): string {
-    // Bing URLs are usually direct, but check for any redirect patterns
+    // Decode Bing's ck/a redirect wrapper:
+    //   https://www.bing.com/ck/a?...&u=a1<base64url-encoded-url>&...
+    // The `u` param has a 2-char prefix (e.g., "a1") followed by base64url of the real URL.
+    if (url.includes('bing.com/ck/a')) {
+      try {
+        const u = new URL(url);
+        const encoded = u.searchParams.get('u');
+        if (encoded && encoded.length > 2) {
+          const stripped = encoded.substring(2);
+          const b64 = stripped.replace(/-/g, '+').replace(/_/g, '/');
+          const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+          const decoded = Buffer.from(padded, 'base64').toString('utf-8');
+          if (decoded.startsWith('http://') || decoded.startsWith('https://')) {
+            return decoded;
+          }
+        }
+      } catch {
+        // fall through to other handling below
+      }
+    }
+
+    // Handle protocol-relative URLs
     if (url.startsWith('//')) {
       return 'https:' + url;
     }
-    
+
     // If it's already a full URL, return as-is
     if (url.startsWith('http://') || url.startsWith('https://')) {
       return url;
