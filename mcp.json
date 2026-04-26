@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "web-search-cloak": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/web-search-mcp-cloak/dist/index.js"
+      ],
+      "env": {
+        "WEBSHARE_API_TOKEN": "<your-webshare-token>"
+      }
+    }
+  }
+}

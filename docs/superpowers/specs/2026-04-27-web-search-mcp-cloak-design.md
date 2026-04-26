@@ -207,7 +207,7 @@ LM Studio → MCP request → SearchEngine.search(query)
 
 - `WEBSHARE_API_TOKEN` is **read from env only**, never logged, never written to source
 - `.env` is gitignored
-- Pre-push check: `git log --all -p | grep -E "WEBSHARE|peeq55"` must return zero matches
+- Pre-push check: `git log --all -p | grep -E "WEBSHARE_API_TOKEN=[a-zA-Z0-9]"` must return zero matches
 - README explicitly documents that users supply their own token; no real token in any commit
 
 ## Future Work (not in this scope)

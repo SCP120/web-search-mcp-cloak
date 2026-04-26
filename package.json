@@ -1,0 +1,60 @@
+{
+  "name": "web-search-mcp-cloak",
+  "version": "0.4.0",
+  "description": "Stealth web-search MCP server. Forked from mrkrsl/web-search-mcp; replaces Playwright with CloakBrowser and adds Webshare proxy rotation to bypass Bing/Brave bot detection.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "web-search-mcp-cloak": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc && echo '✅ TypeScript compilation complete: dist/index.js'",
+    "dev": "tsx watch src/index.ts",
+    "start": "node ./dist/index.js",
+    "lint": "eslint \"src/**/*.ts\"",
+    "format": "prettier --write ."
+  },
+  "keywords": [
+    "mcp",
+    "web-search",
+    "ai",
+    "llm",
+    "cloakbrowser",
+    "stealth",
+    "webshare",
+    "proxy",
+    "lm-studio"
+  ],
+  "author": "SCP120 (fork) — original by Mark Russell (mrkrsl)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SCP120/web-search-mcp-cloak.git"
+  },
+  "homepage": "https://github.com/SCP120/web-search-mcp-cloak",
+  "bugs": {
+    "url": "https://github.com/SCP120/web-search-mcp-cloak/issues"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.15.0",
+    "axios": "^1.6.8",
+    "cheerio": "^1.0.0-rc.12",
+    "cloakbrowser": "^0.3.25",
+    "mmdb-lib": "^3.0.2",
+    "p-limit": "^6.2.0",
+    "p-retry": "^6.2.1",
+    "playwright-core": "^1.48.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.30.1",
+    "@types/node": "^24.0.10",
+    "@typescript-eslint/eslint-plugin": "^8.35.1",
+    "@typescript-eslint/parser": "^8.35.1",
+    "esbuild": "^0.25.5",
+    "eslint": "^9.30.1",
+    "prettier": "^3.2.5",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.5"
+  }
+}
