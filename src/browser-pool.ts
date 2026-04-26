@@ -140,6 +140,16 @@ export class BrowserPool {
       // Auto-sync timezone/locale to proxy IP — improves stealth
       opts.geoip = true;
     }
+    // Concrete proof in stderr: print the EXACT object passed to cloakbrowser.launch()
+    // (with password masked). If proxy is null, this proves no proxy was applied.
+    const debug = {
+      headless: opts.headless,
+      proxy: opts.proxy
+        ? { server: opts.proxy.server, username: opts.proxy.username, password: '***' }
+        : null,
+      geoip: !!opts.geoip,
+    };
+    console.error(`[BrowserPool/PROOF] launch options →`, JSON.stringify(debug));
     return opts;
   }
 

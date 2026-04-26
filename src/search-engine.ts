@@ -309,13 +309,13 @@ export class SearchEngine {
         } catch (enhancedError) {
           const errorMessage = enhancedError instanceof Error ? enhancedError.message : 'Unknown error';
           console.error(`[SearchEngine] BING: Enhanced search failed: ${errorMessage}`);
-          
+
           if (debugBing) {
             console.error(`[SearchEngine] BING: Enhanced search error details:`, enhancedError);
           }
-          
+
           console.error(`[SearchEngine] BING: Falling back to direct URL search...`);
-          
+
           // Fallback to direct URL approach with enhanced parameters
           const results = await this.tryDirectBingSearch(page, query, numResults, timeout);
           console.error(`[SearchEngine] BING: Direct search succeeded with ${results.length} results`);
