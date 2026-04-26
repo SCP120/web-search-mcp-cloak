@@ -15,7 +15,8 @@ export class SearchEngine {
   }
 
   async search(options: SearchOptions): Promise<SearchResultWithMetadata> {
-    const { query, numResults = 5, timeout = 10000 } = options;
+    const envTimeout = parseInt(process.env.DEFAULT_TIMEOUT || '10000', 10);
+    const { query, numResults = 5, timeout = envTimeout } = options;
     const sanitizedQuery = sanitizeQuery(query);
     
     console.log(`[SearchEngine] Starting search for query: "${sanitizedQuery}"`);
@@ -49,7 +50,8 @@ export class SearchEngine {
             console.log(`[SearchEngine] Attempting ${approach.name} (${i + 1}/${approaches.length})...`);
             
             // Use more aggressive timeouts for faster fallback
-            const approachTimeout = Math.min(timeout / 3, 4000); // Max 4 seconds per approach for faster fallback
+            // Through proxies, page.goto needs more headroom. Cap raised from 4s -> 12s.
+            const approachTimeout = Math.min(timeout / 2, 12000);
             const results = await approach.method(sanitizedQuery, numResults, approachTimeout);
             if (results.length > 0) {
               console.log(`[SearchEngine] Found ${results.length} results with ${approach.name}`);
