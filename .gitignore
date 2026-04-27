@@ -93,3 +93,5 @@ jspm_packages/
 
 # DynamoDB Local files
 .dynamodb/ 
+# Eval artifacts (generated, not source)
+evals/artifacts/

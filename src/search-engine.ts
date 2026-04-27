@@ -52,7 +52,20 @@ export class SearchEngine {
             // Use more aggressive timeouts for faster fallback
             // Through proxies, page.goto needs more headroom. Cap raised from 4s -> 12s.
             const approachTimeout = Math.min(timeout / 2, 12000);
-            const results = await approach.method(sanitizedQuery, numResults, approachTimeout);
+            // Hard outer timeout per engine attempt. Tight enough that
+            // 3 engines × hardTimeout < client timeout (~120s), generous
+            // enough to not false-fire during semaphore queueing.
+            // Also bounded by remaining time before the function timeout.
+            const hardTimeout = Math.min(Math.max(approachTimeout * 3, 30000), 35000);
+            const results = await Promise.race([
+              approach.method(sanitizedQuery, numResults, approachTimeout),
+              new Promise<SearchResult[]>((_, reject) =>
+                setTimeout(
+                  () => reject(new Error(`hard timeout after ${hardTimeout}ms (engine: ${approach.name})`)),
+                  hardTimeout
+                )
+              ),
+            ]);
             if (results.length > 0) {
               console.log(`[SearchEngine] Found ${results.length} results with ${approach.name}`);
               
@@ -94,12 +107,19 @@ export class SearchEngine {
             }
           } catch (error) {
             console.error(`[SearchEngine] ${approach.name} approach failed:`, error);
-            
+
             // Handle browser-specific errors (no cleanup needed since each engine uses dedicated browsers)
             await this.handleBrowserError(error, approach.name);
           }
         }
-        
+
+        // After all approaches: if any engine produced results, return the best.
+        // (Fixes a pre-existing bug where the "return best" branch only fired
+        // when the LAST engine itself had >0 results.)
+        if (bestResults.length > 0) {
+          console.log(`[SearchEngine] Loop ended — returning best results from ${bestEngine} (quality: ${bestQuality.toFixed(2)})`);
+          return { results: bestResults, engine: bestEngine };
+        }
         console.log(`[SearchEngine] All approaches failed, returning empty results`);
         return { results: [], engine: 'None' };
       });
@@ -299,29 +319,14 @@ export class SearchEngine {
       console.error(`[SearchEngine] BING: Page opened successfully`);
       
       try {
-        // Try enhanced Bing search with proper web interface flow
-        try {
-          console.error(`[SearchEngine] BING: Attempting enhanced search (homepage → form submission)...`);
-          const results = await this.tryEnhancedBingSearch(page, query, numResults, timeout);
-          console.error(`[SearchEngine] BING: Enhanced search succeeded with ${results.length} results`);
-          await context.close();
-          return results;
-        } catch (enhancedError) {
-          const errorMessage = enhancedError instanceof Error ? enhancedError.message : 'Unknown error';
-          console.error(`[SearchEngine] BING: Enhanced search failed: ${errorMessage}`);
-
-          if (debugBing) {
-            console.error(`[SearchEngine] BING: Enhanced search error details:`, enhancedError);
-          }
-
-          console.error(`[SearchEngine] BING: Falling back to direct URL search...`);
-
-          // Fallback to direct URL approach with enhanced parameters
-          const results = await this.tryDirectBingSearch(page, query, numResults, timeout);
-          console.error(`[SearchEngine] BING: Direct search succeeded with ${results.length} results`);
-          await context.close();
-          return results;
-        }
+        // Skip the homepage→form-submission path: Bing's modern homepage
+        // intercepts Enter and #search_icon click via JS, so we never navigate.
+        // Direct URL search is functionally equivalent and reliable.
+        console.error(`[SearchEngine] BING: Going direct (homepage submission path was unreliable through proxies)...`);
+        const results = await this.tryDirectBingSearch(page, query, numResults, timeout);
+        console.error(`[SearchEngine] BING: Direct search succeeded with ${results.length} results`);
+        await context.close();
+        return results;
       } catch (error) {
         // Ensure context is closed even on error
         console.error(`[SearchEngine] BING: All search methods failed, closing context...`);
@@ -366,15 +371,26 @@ export class SearchEngine {
       console.error(`[SearchEngine] BING: Search box found, filling with query: "${query}"`);
       await page.fill('#sb_form_q', query);
       
-      console.error(`[SearchEngine] BING: Clicking search button and waiting for results...`);
-      // Submit the form. Through proxies, waitForNavigation('domcontentloaded')
-      // is unreliable because Bing's modern UI uses partial reloads. Race instead:
-      // succeed when *either* the URL changes to /search?q= or a result selector appears.
-      await page.click('#search_icon').catch(() => undefined);
-      await Promise.race([
-        page.waitForURL(/\/search\?/, { timeout: timeout }),
-        page.waitForSelector('.b_algo, .b_result, #b_results', { timeout: timeout }),
+      console.error(`[SearchEngine] BING: Submitting search form (Enter key + click fallback)...`);
+      // Submit the form. Pressing Enter inside the input is more natural and
+      // less bot-flagged than clicking #search_icon (which Bing sometimes
+      // intercepts with JS that doesn't navigate). We also fire the click as a
+      // best-effort backup. Then race three signals — URL change, result
+      // selector appearing, OR DOM-content-loaded — whichever lands first wins.
+      const submitDeadline = Math.max(timeout, 30000);
+      await Promise.all([
+        page.locator('#sb_form_q').press('Enter').catch(() => undefined),
+        page.click('#search_icon', { timeout: 1000 }).catch(() => undefined),
       ]);
+      await Promise.race([
+        page.waitForURL(/\/search\?/, { timeout: submitDeadline }),
+        page.waitForSelector('.b_algo, .b_result, #b_results, ol#b_results', { timeout: submitDeadline }),
+        page.waitForLoadState('domcontentloaded', { timeout: submitDeadline }),
+      ]);
+      // Belt-and-suspenders: if URL changed but DOM not ready, give it a beat.
+      if (/\/search\?/.test(page.url())) {
+        await page.waitForSelector('.b_algo, ol#b_results', { timeout: 5000 }).catch(() => undefined);
+      }
       
       const searchLoadTime = Date.now() - startTime;
       const searchPageTitle = await page.title();
@@ -429,9 +445,16 @@ export class SearchEngine {
     
     // Generate a conversation ID (cvid) similar to what Bing uses
     const cvid = this.generateConversationId();
-    
-    // Construct URL with enhanced parameters based on successful manual searches
-    const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=${Math.min(numResults, 10)}&form=QBLH&sp=-1&qs=n&cvid=${cvid}`;
+
+    // Match the URL shape Bing produces for a real user typing+Enter from
+    // the homepage. Dropping `form=` (avoids the QBLH/QBRE "tracked entry"
+    // category that some users have observed serving cached results), keeping
+    // only the params Bing actually requires.
+    const searchUrl =
+      `https://www.bing.com/search?q=${encodeURIComponent(query)}` +
+      `&count=${Math.min(numResults, 10)}` +
+      `&sp=-1&qs=n` +
+      `&cvid=${cvid}`;
     console.error(`[SearchEngine] BING: Navigating to direct URL: ${searchUrl}`);
     
     const startTime = Date.now();
@@ -849,10 +872,14 @@ export class SearchEngine {
           const $snippetElement = $element.find(snippetSelector).first();
           if ($snippetElement.length) {
             const candidateSnippet = $snippetElement.text().trim();
-            // Skip very short snippets or those that look like metadata
-            if (candidateSnippet.length > 20 && !candidateSnippet.match(/^\d+\s*(min|sec|hour|day|week|month|year)/i)) {
+            // Keep snippets that have real content. The previous filter dropped
+            // anything starting with "1 day ago" / "5 mins ago" — that's the
+            // freshness signal, not noise. Only skip if the WHOLE thing is
+            // just a short metadata phrase.
+            const isOnlyMetadata = /^\d+\s*(min|sec|hour|day|week|month|year)s?\s*(ago)?\s*$/i.test(candidateSnippet);
+            if (candidateSnippet.length > 20 && !isOnlyMetadata) {
               snippet = candidateSnippet;
-              console.log(`[SearchEngine] Bing found snippet with ${snippetSelector}: "${snippet.substring(0, 100)}..."`);
+              console.error(`[SearchEngine] Bing found snippet with ${snippetSelector}: "${snippet.substring(0, 120)}..."`);
               break;
             }
           }

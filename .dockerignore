@@ -1,0 +1,12 @@
+node_modules
+.git
+.github
+docs
+*.md
+!README.md
+.env*
+.eslintrc*
+.prettierrc*
+tsconfig.json
+src
+.cloakbrowser

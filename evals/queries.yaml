@@ -1,0 +1,60 @@
+# 10 evaluation queries for web-search-cloak MCP.
+# Each query has a category, the search query itself, and pass criteria.
+
+- id: factual
+  query: What is the current population of Singapore in 2026?
+  pass:
+    min_results: 3
+    expect_url_contains: ["worldometer", "worldpopulation", "statista", "countrymeters"]
+
+- id: recent_news
+  query: Apple WWDC 2026 keynote announcements
+  pass:
+    min_results: 3
+    expect_url_contains: ["apple.com", "wwdc", "macrumors", "theverge", "9to5"]
+
+- id: niche
+  query: MLX 1.6.0 Gemma 4 model loading issue
+  pass:
+    min_results: 2
+    expect_url_contains: ["github.com", "huggingface", "stackoverflow", "reddit"]
+
+- id: site_restricted
+  query: site:stackoverflow.com python asyncio gather exception handling
+  pass:
+    min_results: 3
+    expect_url_contains: ["stackoverflow.com"]
+
+- id: url_fetch
+  query: model context protocol mcp specification documentation
+  pass:
+    min_results: 3
+    expect_url_contains: ["modelcontextprotocol", "anthropic", "github"]
+
+- id: multi_engine
+  query: best mac promo codes 2026
+  pass:
+    min_results: 3
+
+- id: edge_empty
+  query: asdfqwerzxcv random gibberish 12345 nonexistent
+  pass:
+    min_results: 0   # graceful empty/low result handling, no crash
+    allow_zero: true
+
+- id: non_english
+  query: 東京 ラーメン 2026 おすすめ
+  pass:
+    min_results: 2
+
+- id: bing_redirect_regression
+  query: stackoverflow nullable reference types c#
+  pass:
+    min_results: 3
+    forbid_url_contains: ["bing.com/ck/a", "bing.com/aclick"]   # decoder must work
+
+- id: latency
+  query: postgres index types BRIN GIN GIST
+  pass:
+    min_results: 3
+    max_latency_seconds: 90

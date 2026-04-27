@@ -185,8 +185,8 @@ class WebSearchMCPServer {
           }
 
           console.log(`[MCP] Starting web search summaries...`);
-          
-          try {
+
+          {
             // Use existing search engine to get results with snippets
             const searchResponse = await this.searchEngine.search({
               query: obj.query,
@@ -223,15 +223,10 @@ class WebSearchMCPServer {
                 },
               ],
             };
-          } finally {
-            // Ensure browsers are cleaned up after search-only operations
-            // This prevents EventEmitter memory leaks when browsers accumulate listeners
-            try {
-              await this.searchEngine.closeAll();
-            } catch (cleanupError) {
-              console.error(`[MCP] Error during browser cleanup:`, cleanupError);
-            }
           }
+          // Note: do NOT call searchEngine.closeAll() here — engines close
+          // their own ephemeral browsers in their finally blocks, and a global
+          // closeAll() kills in-flight browsers of concurrent queries.
         } catch (error) {
           console.error(`[MCP] Error in get-web-search-summaries tool handler:`, error);
           throw error;

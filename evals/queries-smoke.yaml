@@ -1,0 +1,6 @@
+# Single query smoke for lmstudio mode.
+- id: factual
+  query: What is the current population of Singapore in 2026?
+  pass:
+    min_results: 1
+    expect_url_contains: ["worldometer", "worldpopulation", "statista", "countrymeters", "singapore", "data.gov.sg"]

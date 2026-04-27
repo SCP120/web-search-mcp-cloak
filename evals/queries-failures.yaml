@@ -1,0 +1,17 @@
+# The 3 queries that failed under glm-4.7. Re-running on qwen3-coder.
+- id: factual
+  query: What is the current population of Singapore in 2026?
+  pass:
+    min_results: 3
+    expect_url_contains: ["worldometer", "worldpopulation", "statista", "countrymeters"]
+
+- id: non_english
+  query: 東京 ラーメン 2026 おすすめ
+  pass:
+    min_results: 2
+
+- id: bing_redirect_regression
+  query: stackoverflow nullable reference types c#
+  pass:
+    min_results: 3
+    forbid_url_contains: ["bing.com/ck/a", "bing.com/aclick"]
