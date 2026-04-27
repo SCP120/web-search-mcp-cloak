@@ -8,6 +8,7 @@ import { SearchEngine } from './search-engine.js';
 import { EnhancedContentExtractor } from './enhanced-content-extractor.js';
 import { WebSearchToolInput, WebSearchToolOutput, SearchResult } from './types.js';
 import { isPdfUrl } from './utils.js';
+import { searchVulnerabilities, searchMakeMoneyOnline, searchGitHub } from './niche-engines.js';
 
 class WebSearchMCPServer {
   private server: McpServer;
@@ -316,6 +317,87 @@ class WebSearchMCPServer {
           throw error;
         }
       }
+    );
+
+    // ----------------------------------------------------------------------
+    // Niche tools — JSON-API only, no headless browser, sub-second responses.
+    // ----------------------------------------------------------------------
+
+    // Vulnerability search (OSV.dev + NVD)
+    this.server.tool(
+      'search-vulnerabilities',
+      'Search for security vulnerabilities and CVEs. Use for: "Is package X vulnerable?", "What is CVE-2024-1234?", "List CVEs for nginx". Accepts: a CVE-ID (CVE-YYYY-N), an ecosystem-prefixed package (e.g. "pypi:requests", "npm:lodash", "go:github.com/foo/bar", "cargo:tokio"), or any free-text keyword. Returns CVE descriptions, CVSS scores, references.',
+      {
+        query: z.string().describe('CVE-ID, ecosystem:package (pypi/npm/go/cargo/maven/nuget/composer/ruby), or free-text keyword'),
+        limit: z.union([z.number(), z.string()]).transform(v => {
+          const n = typeof v === 'string' ? parseInt(v, 10) : v;
+          return isNaN(n) || n < 1 ? 10 : Math.min(n, 30);
+        }).default(10).describe('Max number of results (1-30, default 10)'),
+      },
+      async (args: unknown) => {
+        const obj = args as { query: string; limit?: number };
+        try {
+          const text = await searchVulnerabilities(obj.query, obj.limit ?? 10);
+          return { content: [{ type: 'text' as const, text }] };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { content: [{ type: 'text' as const, text: `# Vulnerability search failed\n\n${msg}` }] };
+        }
+      },
+    );
+
+    // Make money online — HN Algolia + IndieHackers
+    this.server.tool(
+      'search-make-money-online',
+      'Search for online income ideas, side hustles, SaaS revenue posts, and bootstrapped business stories. Pulls from Hacker News (Show HN launches, "I made $X" threads, Ask HN side-hustle discussions) AND IndieHackers (founder revenue disclosures). Use for: "How are people making money with X?", "Side hustles for [skill]", "SaaS that hit $1M ARR", "Show HN launches in [domain]".',
+      {
+        query: z.string().describe('Topic to search (e.g. "AI SaaS revenue", "side hustle programming", "indiehacker $10k MRR")'),
+        limit: z.union([z.number(), z.string()]).transform(v => {
+          const n = typeof v === 'string' ? parseInt(v, 10) : v;
+          return isNaN(n) || n < 1 ? 10 : Math.min(n, 20);
+        }).default(10).describe('Max results per source (1-20, default 10)'),
+      },
+      async (args: unknown) => {
+        const obj = args as { query: string; limit?: number };
+        try {
+          const text = await searchMakeMoneyOnline(obj.query, obj.limit ?? 10);
+          return { content: [{ type: 'text' as const, text }] };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { content: [{ type: 'text' as const, text: `# MMO search failed\n\n${msg}` }] };
+        }
+      },
+    );
+
+    // GitHub repository search
+    this.server.tool(
+      'search-github',
+      'Search GitHub repositories. Use for: "Find Python libraries that do X", "OSS alternatives to [paid tool]", "Microservices for [stack]". Supports language and topic qualifiers. Set GITHUB_TOKEN env var for higher rate limits (5000/hr vs 60/hr unauth).',
+      {
+        query: z.string().describe('What to search for (e.g. "stripe alternative", "rate limiter", "vector database")'),
+        language: z.string().optional().describe('Filter by primary language (e.g. "python", "rust", "typescript")'),
+        topic: z.string().optional().describe('Filter by GitHub topic (e.g. "machine-learning", "self-hosted")'),
+        sort: z.enum(['stars', 'updated']).default('stars').describe('Sort by stars (popularity) or updated (recency)'),
+        limit: z.union([z.number(), z.string()]).transform(v => {
+          const n = typeof v === 'string' ? parseInt(v, 10) : v;
+          return isNaN(n) || n < 1 ? 10 : Math.min(n, 30);
+        }).default(10).describe('Max results (1-30, default 10)'),
+      },
+      async (args: unknown) => {
+        const obj = args as { query: string; language?: string; topic?: string; sort?: 'stars' | 'updated'; limit?: number };
+        try {
+          const text = await searchGitHub(obj.query, {
+            language: obj.language,
+            topic: obj.topic,
+            sort: obj.sort,
+            limit: obj.limit ?? 10,
+          });
+          return { content: [{ type: 'text' as const, text }] };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { content: [{ type: 'text' as const, text: `# GitHub search failed\n\n${msg}` }] };
+        }
+      },
     );
   }
 
