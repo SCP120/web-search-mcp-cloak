@@ -37,6 +37,7 @@ export class SearchEngine {
         const approaches = [
           { method: this.tryBrowserBingSearch.bind(this), name: 'Browser Bing' },
           { method: this.tryBrowserBraveSearch.bind(this), name: 'Browser Brave' },
+          { method: this.tryBrowserMojeekSearch.bind(this), name: 'Browser Mojeek' },
           { method: this.tryDuckDuckGoSearch.bind(this), name: 'Axios DuckDuckGo' }
         ];
         
@@ -224,6 +225,47 @@ export class SearchEngine {
       }
     } catch (error) {
       console.error(`[SearchEngine] Browser Brave search failed:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Mojeek — independent UK crawler. Used as a freshness/coverage fallback
+   * when Bing is being flaky.
+   *
+   * Networking note: Mojeek 403s Webshare datacenter IPs (we tested SG
+   * pool). So we go DIRECT (no proxy) via plain axios. The trade-off is
+   * the host's egress IP is exposed to Mojeek — acceptable because:
+   *   1. Mojeek doesn't have any account/login concept tied to IP, and
+   *   2. it's only a fallback engine, not the primary path.
+   * If you need full anonymity, set MOJEEK_ENABLED=false to disable.
+   */
+  private async tryBrowserMojeekSearch(query: string, numResults: number, _timeout: number): Promise<SearchResult[]> {
+    if (process.env.MOJEEK_ENABLED === 'false') {
+      console.error(`[SearchEngine] MOJEEK: disabled via MOJEEK_ENABLED=false`);
+      return [];
+    }
+    console.error(`[SearchEngine] MOJEEK: Starting axios search (direct, no proxy) for query: "${query}"`);
+
+    const url = `https://www.mojeek.com/search?q=${encodeURIComponent(query)}&t=${Math.min(numResults * 2, 20)}`;
+    try {
+      const response = await axios.get(url, {
+        timeout: 8000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-GB,en;q=0.9',
+          'Accept-Encoding': 'gzip, deflate, br',
+        },
+        responseType: 'text',
+      });
+      console.error(`[SearchEngine] MOJEEK: HTTP ${response.status}, body length: ${(response.data || '').length}`);
+      const results = this.parseMojeekResults(String(response.data || ''), numResults);
+      console.error(`[SearchEngine] MOJEEK: Parsed ${results.length} results`);
+      return results;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`[SearchEngine] MOJEEK: request failed: ${msg}`);
       throw error;
     }
   }
@@ -903,6 +945,95 @@ export class SearchEngine {
     }
 
     console.log(`[SearchEngine] Bing found ${results.length} results`);
+    return results;
+  }
+
+  /**
+   * Parse Mojeek search results.
+   *
+   * Modern Mojeek HTML (2024-26) renders results as:
+   *   <ul class="results-standard">
+   *     <li>
+   *       <h2><a href="...">Title</a></h2>
+   *       <a class="ob" href="...">displayed.url/path</a>
+   *       <p class="s">Snippet text...</p>
+   *     </li>
+   *   </ul>
+   *
+   * Older / fallback layouts use `.result` divs. We try both.
+   */
+  private parseMojeekResults(html: string, maxResults: number): SearchResult[] {
+    console.error(`[SearchEngine] MOJEEK: Parsing HTML length: ${html.length}`);
+    const $ = cheerio.load(html);
+    const results: SearchResult[] = [];
+    const timestamp = generateTimestamp();
+
+    const pageTitle = $('title').text();
+    console.error(`[SearchEngine] MOJEEK: Page title: "${pageTitle}"`);
+    if (/forbidden|automated|captcha|denied/i.test(pageTitle)) {
+      console.error(`[SearchEngine] MOJEEK: bot wall detected in title`);
+      return results;
+    }
+
+    const containerSelectors = ['ul.results-standard > li', '.results > li', '.result', 'li.result'];
+    for (const sel of containerSelectors) {
+      const elements = $(sel);
+      if (elements.length === 0) continue;
+      console.error(`[SearchEngine] MOJEEK: Found ${elements.length} elements with "${sel}"`);
+
+      elements.each((_i, el) => {
+        if (results.length >= maxResults) return false;
+        const $el = $(el);
+
+        // Title + URL: usually in <h2><a> ... </a></h2>
+        let title = '';
+        let url = '';
+        const $titleAnchor = $el.find('h2 a, h3 a, .title a').first();
+        if ($titleAnchor.length) {
+          title = $titleAnchor.text().trim();
+          url = $titleAnchor.attr('href') || '';
+        }
+        // Fallback: any external <a> with text
+        if (!title || !url) {
+          const $any = $el.find('a[href^="http"]').first();
+          if ($any.length) {
+            title = title || $any.text().trim();
+            url = url || ($any.attr('href') || '');
+          }
+        }
+
+        // Snippet: <p class="s"> is the standard, <p> as fallback
+        let snippet = '';
+        const snippetSelectors = ['p.s', '.s', 'p.description', '.description', 'p'];
+        for (const ss of snippetSelectors) {
+          const $s = $el.find(ss).first();
+          if ($s.length) {
+            const text = $s.text().trim();
+            if (text.length > 20) {
+              snippet = text;
+              break;
+            }
+          }
+        }
+
+        if (title && url && this.isValidSearchUrl(url)) {
+          results.push({
+            title,
+            url,
+            description: snippet || 'No description available',
+            fullContent: '',
+            contentPreview: '',
+            wordCount: 0,
+            timestamp,
+            fetchStatus: 'success',
+            error: undefined,
+          });
+        }
+      });
+      if (results.length > 0) break;
+    }
+
+    console.error(`[SearchEngine] MOJEEK: returning ${results.length} parsed results`);
     return results;
   }
 
