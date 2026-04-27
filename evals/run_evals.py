@@ -358,7 +358,8 @@ def main():
     ap.add_argument("--queries", type=str, default=str(QUERIES_FILE),
                     help="path to queries yaml")
     ap.add_argument("--fresh-per-query", action="store_true",
-                    help="(direct mode) spawn a new docker container per query — slow but immune to cumulative MCP state")
+                    help="DANGEROUS — spawns a new docker container per query. Stresses Docker Desktop's VM under "
+                         "rapid churn (caused a kernel-watchdog panic in testing). Default persistent client is safe.")
     args = ap.parse_args()
 
     queries = yaml.safe_load(Path(args.queries).read_text())
@@ -372,6 +373,7 @@ def main():
     if args.mode == "direct":
         stderr_path = str(run_dir / "mcp_stderr.log")
         if args.fresh_per_query:
+            print(f"[evals] ⚠️  --fresh-per-query is risky on macOS Docker Desktop; consider removing it")
             print(f"[evals] mode=direct (fresh-per-query) — new docker per query (stderr: {stderr_path})")
             client = None  # we'll spawn one inside the loop
         else:
