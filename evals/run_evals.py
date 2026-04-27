@@ -64,6 +64,151 @@ DOCKER_ENV = {
 URL_RE = re.compile(r"URL:\s*(\S+)", re.IGNORECASE)
 ANY_URL_RE = re.compile(r"https?://[^\s)\]>\"']+")
 
+
+# ---------------------------------------------------------------------------
+# Preflight — abort before starting if the host or Docker is unhealthy.
+# Two real crashes during development; this gate stops the third.
+# ---------------------------------------------------------------------------
+def preflight_check(*, abort_threshold_swap_gb: float = 6.0,
+                    abort_threshold_free_pages: int = 8000,
+                    abort_threshold_orphan_browsers: int = 2,
+                    abort_threshold_recent_docker_vm_crash_hours: float = 1.0,
+                    skip: bool = False) -> None:
+    """Verify the host can safely run a Docker-stress eval. Exit on red flags.
+
+    Checks (each can independently abort):
+      1. Orphan headless_shell / chrome-headless-shell processes — Layer 1 leak
+      2. Swap usage > threshold (host already memory-pressured)
+      3. Free memory pages < threshold
+      4. Docker daemon responsive (only if mode=direct)
+      5. Recent Docker VM crash in DiagnosticReports (< N hours)
+    """
+    if skip:
+        print("[preflight] ⚠️  --skip-preflight: bypassing safety checks")
+        return
+
+    print("[preflight] running host-safety checks...")
+    issues: list[str] = []
+
+    # 1. Orphan headless browsers
+    try:
+        out = subprocess.run(["pgrep", "-fl", "chrome-headless-shell|headless_shell"],
+                             capture_output=True, text=True, timeout=5)
+        n = len([l for l in out.stdout.splitlines() if l.strip()])
+        if n > abort_threshold_orphan_browsers:
+            issues.append(
+                f"❌ {n} orphan headless browser PIDs already running "
+                f"(>{abort_threshold_orphan_browsers}). Run "
+                f"`pkill -9 -f chrome-headless-shell` and retry."
+            )
+        else:
+            print(f"  ✅ orphan browsers: {n}")
+    except Exception as e:
+        print(f"  ⚠️  could not check orphan browsers: {e}")
+
+    # 2. Swap pressure
+    try:
+        out = subprocess.run(["sysctl", "-n", "vm.swapusage"],
+                             capture_output=True, text=True, timeout=5)
+        # Output: "total = 2048.00M  used = 1234.56M  free = 813.44M  (encrypted)"
+        m = re.search(r"used\s*=\s*([\d.]+)([MGK])", out.stdout)
+        if m:
+            num, unit = float(m.group(1)), m.group(2)
+            mult = {"K": 1/1024/1024, "M": 1/1024, "G": 1.0}[unit]
+            used_gb = num * mult
+            if used_gb >= abort_threshold_swap_gb:
+                issues.append(
+                    f"❌ swap usage {used_gb:.1f} GB ≥ threshold {abort_threshold_swap_gb} GB. "
+                    f"Host memory-pressured; reboot or close apps before running."
+                )
+            else:
+                print(f"  ✅ swap used: {used_gb:.2f} GB")
+    except Exception as e:
+        print(f"  ⚠️  could not check swap: {e}")
+
+    # 3. Free memory pages (vm_stat) — page size is typically 16384 on Apple Silicon
+    try:
+        out = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5)
+        m = re.search(r"Pages free:\s+(\d+)", out.stdout)
+        if m:
+            free_pages = int(m.group(1))
+            ps = 16384
+            free_gb = (free_pages * ps) / (1024 ** 3)
+            if free_pages < abort_threshold_free_pages:
+                issues.append(
+                    f"❌ free memory: {free_pages} pages (~{free_gb:.2f} GB) "
+                    f"< threshold {abort_threshold_free_pages} pages. "
+                    f"Close some apps before running."
+                )
+            else:
+                print(f"  ✅ free memory: {free_pages} pages (~{free_gb:.2f} GB)")
+    except Exception as e:
+        print(f"  ⚠️  could not check vm_stat: {e}")
+
+    # 4. Docker daemon responsive
+    try:
+        rc = subprocess.run(["docker", "info"], capture_output=True, timeout=5).returncode
+        if rc != 0:
+            issues.append(
+                "❌ Docker daemon not responding. Start Docker Desktop and retry."
+            )
+        else:
+            print("  ✅ Docker daemon responding")
+    except FileNotFoundError:
+        issues.append("❌ docker CLI not found in PATH")
+    except subprocess.TimeoutExpired:
+        issues.append("❌ Docker daemon timed out — Desktop VM may be wedged")
+    except Exception as e:
+        print(f"  ⚠️  could not check docker: {e}")
+
+    # 5. Recent Docker VM crash (Apple Virtualization framework)
+    try:
+        crashes_dir = Path("/Library/Logs/DiagnosticReports")
+        if crashes_dir.exists():
+            cutoff = time.time() - abort_threshold_recent_docker_vm_crash_hours * 3600
+            recent = []
+            for p in crashes_dir.iterdir():
+                name = p.name
+                if "Virtualization" not in name and "Docker" not in name:
+                    continue
+                try:
+                    if p.stat().st_mtime > cutoff:
+                        recent.append(p.name)
+                except Exception:
+                    continue
+            # Also check Retired/
+            retired = crashes_dir / "Retired"
+            if retired.exists():
+                for p in retired.iterdir():
+                    if "Virtualization" not in p.name and "Docker" not in p.name:
+                        continue
+                    try:
+                        if p.stat().st_mtime > cutoff:
+                            recent.append(f"Retired/{p.name}")
+                    except Exception:
+                        continue
+            if recent:
+                issues.append(
+                    f"❌ {len(recent)} recent Docker/Virtualization crash report(s) "
+                    f"in last {abort_threshold_recent_docker_vm_crash_hours}h:\n"
+                    f"     " + "\n     ".join(recent[:5]) +
+                    "\n     Reboot strongly recommended before running."
+                )
+            else:
+                print(f"  ✅ no Docker VM crash reports in last "
+                      f"{abort_threshold_recent_docker_vm_crash_hours}h")
+    except Exception as e:
+        print(f"  ⚠️  could not scan crash reports: {e}")
+
+    if issues:
+        print("\n[preflight] ABORTING — host not safe to run eval:\n")
+        for issue in issues:
+            print(f"  {issue}\n")
+        print("[preflight] Override with --skip-preflight (NOT recommended).")
+        sys.exit(2)
+
+    print("[preflight] all safe ✅\n")
+
 # LM Studio API
 LM_API_URL = "http://localhost:1234/api/v1/chat"
 LM_API_TOKEN = os.environ.get("LM_API_TOKEN", "")
@@ -360,7 +505,14 @@ def main():
     ap.add_argument("--fresh-per-query", action="store_true",
                     help="DANGEROUS — spawns a new docker container per query. Stresses Docker Desktop's VM under "
                          "rapid churn (caused a kernel-watchdog panic in testing). Default persistent client is safe.")
+    ap.add_argument("--skip-preflight", action="store_true",
+                    help="Skip host-safety checks. NOT recommended; the checks exist because two real crashes happened.")
     args = ap.parse_args()
+
+    # Run preflight first — abort early if host is in a bad state.
+    # Only relevant for direct mode (Docker stress); lmstudio mode is lighter.
+    if args.mode == "direct":
+        preflight_check(skip=args.skip_preflight)
 
     queries = yaml.safe_load(Path(args.queries).read_text())
     print(f"[evals] loaded {len(queries)} queries from {args.queries}")
